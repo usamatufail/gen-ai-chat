@@ -1,115 +1,140 @@
-import Image from "next/image";
-import localFont from "next/font/local";
+import React, { useEffect, useState } from "react";
+import { saveChat, getChats, getChat, deleteChat } from "@/lib/db";
+import { ChatWindow, Sidebar } from "@/components";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
-});
-const geistMono = localFont({
-  src: "./fonts/GeistMonoVF.woff",
-  variable: "--font-geist-mono",
-  weight: "100 900",
-});
+interface Chat {
+  id: string;
+  title: string;
+  messages: { role: string; content: string }[];
+}
 
 export default function Home() {
-  return (
-    <div
-      className={`${geistSans.variable} ${geistMono.variable} grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]`}
-    >
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/pages/index.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+  useEffect(() => {
+    const fetchChats = async () => {
+      const storedChats = await getChats();
+      setChats(storedChats);
+    };
+
+    fetchChats();
+  }, []);
+
+  const handleNewChat = async () => {
+    const newChat: Chat = {
+      id: Date.now().toString(),
+      title: "New Chat",
+      messages: [],
+    };
+    await saveChat(newChat);
+    setChats(prev => [newChat, ...prev]);
+    setActiveChatId(newChat.id);
+  };
+
+  const handleSelectChat = async (id: string) => {
+    const chat = await getChat(id);
+    if (chat) setActiveChatId(chat.id);
+  };
+
+  const handleSendMessage = async (message: string) => {
+    if (!activeChatId) return;
+
+    const activeChat = chats.find(chat => chat.id === activeChatId);
+
+    if (!activeChat) {
+      console.error("Active chat not found.");
+      return;
+    }
+
+    // If it's the first message in the chat, update the title
+    const isFirstMessage = activeChat.messages.length === 0;
+
+    const updatedChat: Chat = {
+      ...activeChat,
+      title: isFirstMessage ? message.slice(0, 20) + "..." : activeChat.title,
+      messages: [...activeChat.messages, { role: "user", content: message }],
+    };
+
+    // Update state and save to IndexedDB
+    setChats(prev =>
+      prev.map(chat => (chat.id === activeChatId ? updatedChat : chat))
+    );
+
+    await saveChat(updatedChat);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: updatedChat.messages,
+        }),
+      });
+
+      const data = await response.json();
+
+      const finalChat: Chat = {
+        ...updatedChat,
+        messages: [
+          ...updatedChat.messages,
+          { role: "assistant", content: data.message },
+        ],
+      };
+
+      // Save the updated chat to IndexedDB
+      await saveChat(finalChat);
+
+      // Update the state with the assistant's response
+      setChats(prev =>
+        prev.map(chat => (chat.id === activeChatId ? finalChat : chat))
+      );
+    } catch (error) {
+      console.error("Error sending message:", error);
+    }
+  };
+
+  const handleDeleteChat = async (id: string) => {
+    const confirm = window.confirm(
+      "Are you sure you want to delete this chat?"
+    );
+    if (!confirm) return;
+
+    // Remove from IndexedDB
+    await deleteChat(id);
+
+    // Update state to remove chat
+    setChats(prev => prev.filter(chat => chat.id !== id));
+
+    // Clear active chat if it was deleted
+    if (id === activeChatId) {
+      setActiveChatId(null);
+    }
+  };
+
+  const activeChat = chats.find(chat => chat.id === activeChatId);
+
+  return (
+    <div className="flex h-screen">
+      <Sidebar
+        chats={chats.map(chat => ({ id: chat.id, title: chat.title }))}
+        activeChatId={activeChatId}
+        onSelectChat={handleSelectChat}
+        onNewChat={handleNewChat}
+        onDeleteChat={handleDeleteChat}
+      />
+      <div className="flex flex-1">
+        {activeChat ? (
+          <ChatWindow
+            messages={activeChat.messages}
+            onSendMessage={handleSendMessage}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        ) : (
+          <div className="flex flex-1 items-center justify-center">
+            <p>Select or create a chat to get started</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
